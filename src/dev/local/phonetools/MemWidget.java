@@ -21,17 +21,17 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 public class MemWidget extends AppWidgetProvider {
     private static final long INTERVAL = 60_000L;
     private static final String ACTION_CLEAN = "dev.local.phonetools.CLEAN";
-    /** How often CpuService redraws the live rows and takes a graph sample. */
+    /**
+     * How often CpuService takes a sample and redraws the live rows and the graph. The graph steps once per sample:
+     * scrolling it smoothly in between (5 redraws a second) cost about 40% of a core on a OnePlus 9 Pro, across this
+     * app, the launcher and SurfaceFlinger.
+     */
     static final int INTERVAL_MS = 1000;
-    /** How often the graph is redrawn, scrolled part of a step, so it moves smoothly between samples. */
-    static final int FRAME_MS = 200;
     // A minute of samples.
     private static final int SAMPLES = 60_000 / INTERVAL_MS;
     private static final int CPU_COLOR = 0xFF80CBC4, RAM_COLOR = 0xFFFFD54F;
@@ -40,11 +40,16 @@ public class MemWidget extends AppWidgetProvider {
     // CPU and RAM use in percent, oldest first: one sample every INTERVAL_MS while CpuService runs. Kept in memory only.
     private static final int[] cpuHistory = new int[SAMPLES], ramHistory = new int[SAMPLES];
     private static int samples;
-    private static long lastTime, lastSampleTime;
-    private static boolean wasHomeVisible = true;
-    private static final CpuMeter cpuMeter = new CpuMeter();
-    // Graph bitmaps, reused for every frame (an update copies them).
+    private static long lastTime;
+    // Graph bitmaps, reused for every update (an update copies them), and what draws into them.
     private static Bitmap cpuBitmap, ramBitmap;
+    private static final Canvas canvas = new Canvas();
+    private static final Paint baseline = new Paint(), curve = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Path line = new Path(), fill = new Path();
+    private static final float[] xs = new float[SAMPLES], ys = new float[SAMPLES];
+    // MemTotal, MemFree, SwapTotal, SwapFree from /proc/meminfo, in KB.
+    private static final String[] MEMINFO_KEYS = {"MemTotal:", "MemFree:", "SwapTotal:", "SwapFree:"};
+    private static final long[] meminfo = new long[MEMINFO_KEYS.length];
     // False when the phone allows no way of measuring CPU use; then it is left out and only RAM is graphed.
     private static boolean cpuReadable = true;
     // The CPU's temperature sensor files (thermal zones named after the CPU), found on first use.
@@ -86,29 +91,17 @@ public class MemWidget extends AppWidgetProvider {
         AppWidgetManager.getInstance(context).updateAppWidget(new ComponentName(context, MemWidget.class), render(context));
     }
 
-    /** Called every FRAME_MS: takes a sample when one is due, otherwise only scrolls the graph on. */
+    /** Called every INTERVAL_MS: takes a sample, and redraws the widget if it is on screen. */
     static void tick(Context context, boolean homeVisible) {
-        boolean due = SystemClock.elapsedRealtime() - lastTime >= INTERVAL_MS - FRAME_MS / 2;
         if (!homeVisible) {
             // Nobody sees the widget: skip drawing and sending it, but keep sampling (cheap) so that the graphs
             // are complete when the home screen comes back.
-            if (due) {
-                synchronized (MemWidget.class) {
-                    sample(setMemory(context, new RemoteViews(context.getPackageName(), R.layout.widget_mem)));
-                }
+            synchronized (MemWidget.class) {
+                sample(setMemory(context, new RemoteViews(context.getPackageName(), R.layout.widget_mem)));
             }
-            wasHomeVisible = false;
             return;
         }
-        if (due || !wasHomeVisible) {
-            wasHomeVisible = true;
-            updateLive(context);
-        } else if (samples > 1) {
-            RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_mem);
-            setGraphImages(views);
-            AppWidgetManager manager = AppWidgetManager.getInstance(context);
-            manager.partiallyUpdateAppWidget(manager.getAppWidgetIds(new ComponentName(context, MemWidget.class)), views);
-        }
+        updateLive(context);
     }
 
     /** Takes a sample and redraws the memory rows and the graph of every widget. */
@@ -139,14 +132,15 @@ public class MemWidget extends AppWidgetProvider {
 
     /** Fills in the memory text and bar, and returns the percentage of RAM in use. */
     private static int setMemory(Context context, RemoteViews views) {
-        Map<String, Long> m = readMeminfo();
-        long total = m.getOrDefault("MemTotal", 0L);
+        long[] m = meminfo;
+        SysFiles.readFields("/proc/meminfo", MEMINFO_KEYS, m, 0);
+        long total = m[0];
         ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
         ((ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryInfo(info);
         long available = info.availMem / 1024;
-        long free = m.getOrDefault("MemFree", 0L);
-        long swapTotal = m.getOrDefault("SwapTotal", 0L);
-        long swapUsed = swapTotal - m.getOrDefault("SwapFree", 0L);
+        long free = m[1];
+        long swapTotal = m[2];
+        long swapUsed = swapTotal - m[3];
         int usedPercent = total > 0 ? (int) ((total - available) * 100 / total) : 0;
 
         views.setTextViewText(R.id.available, "Available " + mb(available) + " of " + mb(total));
@@ -174,12 +168,8 @@ public class MemWidget extends AppWidgetProvider {
             cpuBitmap = Bitmap.createBitmap(GRAPH_WIDTH, GRAPH_HEIGHT, Bitmap.Config.ARGB_8888);
             ramBitmap = Bitmap.createBitmap(GRAPH_WIDTH, GRAPH_HEIGHT, Bitmap.Config.ARGB_8888);
         }
-        // How far into the next step the graph has scrolled since the newest sample.
-        // A lone first sample is shown at once, at the right edge.
-        float progress = samples == 1 ? 1
-                : Math.min(1, (SystemClock.elapsedRealtime() - lastSampleTime) / (float) INTERVAL_MS);
-        views.setImageViewBitmap(R.id.cpu_graph, graph(cpuBitmap, cpuHistory, CPU_COLOR, progress));
-        views.setImageViewBitmap(R.id.ram_graph, graph(ramBitmap, ramHistory, RAM_COLOR, progress));
+        views.setImageViewBitmap(R.id.cpu_graph, graph(cpuBitmap, cpuHistory, CPU_COLOR));
+        views.setImageViewBitmap(R.id.ram_graph, graph(ramBitmap, ramHistory, RAM_COLOR));
     }
 
     /** Forgets the previous reading, so the next sample does not average over a pause. */
@@ -191,7 +181,7 @@ public class MemWidget extends AppWidgetProvider {
     private static void sample(int ramPercent) {
         long now = SystemClock.elapsedRealtime();
         if (lastTime != 0 && now - lastTime < INTERVAL_MS * 9 / 10) return;
-        int cpu = cpuMeter.sample(now, 3 * INTERVAL_MS);
+        int cpu = CpuMeter.sampleShared(now, 3 * INTERVAL_MS);
         cpuReadable = cpu != CpuMeter.UNAVAILABLE;
         if (lastTime != 0) {
             if (samples == SAMPLES) {
@@ -201,7 +191,6 @@ public class MemWidget extends AppWidgetProvider {
             }
             cpuHistory[samples] = Math.max(0, cpu);
             ramHistory[samples++] = ramPercent;
-            lastSampleTime = now;
         }
         lastTime = now;
     }
@@ -224,7 +213,7 @@ public class MemWidget extends AppWidgetProvider {
         }
         long hottest = 0;
         for (String sensor : cpuSensors) {
-            long value = readLong(sensor);
+            long value = SysFiles.readLong(sensor, 0);
             // Most kernels report millidegrees, some (like the Moto G 2014's) whole degrees.
             if (value > 1000) value /= 1000;
             if (value < 150) hottest = Math.max(hottest, value);
@@ -239,25 +228,22 @@ public class MemWidget extends AppWidgetProvider {
     }
 
     /**
-     * Draws the history as a filled curve into {@code bitmap}. The graph scrolls left as {@code progress} goes from 0
-     * to 1, so the newest sample slides in from the right edge until the next one arrives.
+     * Draws the history as a filled curve into {@code bitmap}, the newest sample at the right edge.
      */
-    private static Bitmap graph(Bitmap bitmap, int[] values, int color, float progress) {
+    private static Bitmap graph(Bitmap bitmap, int[] values, int color) {
         bitmap.eraseColor(0);
-        Canvas canvas = new Canvas(bitmap);
-        Paint baseline = new Paint();
+        canvas.setBitmap(bitmap);
         baseline.setColor(0x33FFFFFF);
         canvas.drawLine(0, GRAPH_HEIGHT - 1, GRAPH_WIDTH, GRAPH_HEIGHT - 1, baseline);
 
         float step = GRAPH_WIDTH / (float) (SAMPLES - 1);
-        float startX = GRAPH_WIDTH - (samples - 2 + progress) * step;
-        float[] xs = new float[samples], ys = new float[samples];
+        float startX = GRAPH_WIDTH - (samples - 1) * step;
         for (int i = 0; i < samples; i++) {
             xs[i] = startX + i * step;
             ys[i] = GRAPH_HEIGHT - 2 - values[i] * (GRAPH_HEIGHT - 4) / 100f;
         }
         // A curve through the midpoints between samples, bending at each sample.
-        Path line = new Path();
+        line.rewind();
         line.moveTo(xs[0], ys[0]);
         for (int i = 1; i < samples; i++) {
             line.quadTo(xs[i - 1], ys[i - 1], (xs[i - 1] + xs[i]) / 2, (ys[i - 1] + ys[i]) / 2);
@@ -265,20 +251,21 @@ public class MemWidget extends AppWidgetProvider {
         line.lineTo(xs[samples - 1], ys[samples - 1]);
         // A single sample still shows as a dot.
         if (samples == 1) line.lineTo(xs[0] + 0.1f, ys[0]);
-        Path fill = new Path(line);
+        fill.set(line);
         fill.lineTo(xs[samples - 1], GRAPH_HEIGHT);
         fill.lineTo(xs[0], GRAPH_HEIGHT);
         fill.close();
 
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        paint.setColor(color & 0x55FFFFFF);
-        canvas.drawPath(fill, paint);
-        paint.setColor(color);
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(samples == 1 ? 6 : 2);
-        paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setStrokeJoin(Paint.Join.ROUND);
-        canvas.drawPath(line, paint);
+        curve.setColor(color & 0x55FFFFFF);
+        curve.setStyle(Paint.Style.FILL);
+        canvas.drawPath(fill, curve);
+        curve.setColor(color);
+        curve.setStyle(Paint.Style.STROKE);
+        curve.setStrokeWidth(samples == 1 ? 6 : 2);
+        curve.setStrokeCap(Paint.Cap.ROUND);
+        curve.setStrokeJoin(Paint.Join.ROUND);
+        canvas.drawPath(line, curve);
+        canvas.setBitmap(null);
         return bitmap;
     }
 
@@ -296,7 +283,7 @@ public class MemWidget extends AppWidgetProvider {
         if (plugged == 0) return "Not charging";
         String source = plugged == BatteryManager.BATTERY_PLUGGED_AC ? "AC"
                 : plugged == BatteryManager.BATTERY_PLUGGED_USB ? "USB" : "Wireless";
-        long input = readLong("/sys/class/power_supply/usb/voltage_now") / 1000;
+        long input = SysFiles.readLong("/sys/class/power_supply/usb/voltage_now", 0) / 1000;
         String charger = source + (input > 0 ? " " + volts(input) + " V" : "");
         // Plugged in is not always charging: phones hold the battery below full (OxygenOS at 80-85%, for one).
         int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN);
@@ -316,14 +303,6 @@ public class MemWidget extends AppWidgetProvider {
         return String.format(java.util.Locale.US, "%.2f", mv / 1000.0);
     }
 
-    private static long readLong(String path) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(path))) {
-            return Long.parseLong(reader.readLine().trim());
-        } catch (Exception ignored) {
-            return 0;
-        }
-    }
-
     private static PendingIntent selfIntent(Context context) {
         int[] ids = AppWidgetManager.getInstance(context)
                 .getAppWidgetIds(new ComponentName(context, MemWidget.class));
@@ -341,16 +320,4 @@ public class MemWidget extends AppWidgetProvider {
         return (kb / 1024) + " MB";
     }
 
-    private static Map<String, Long> readMeminfo() {
-        Map<String, Long> values = new HashMap<>();
-        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/meminfo"))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] parts = line.split("\\s+");
-                if (parts.length >= 2) values.put(parts[0].replace(":", ""), Long.parseLong(parts[1]));
-            }
-        } catch (Exception ignored) {
-        }
-        return values;
-    }
 }

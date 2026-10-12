@@ -13,8 +13,8 @@ import android.os.IBinder;
 import android.os.PowerManager;
 
 /**
- * Redraws the widget's memory rows and CPU/RAM graph every second while the screen is on, scrolls the graph
- * smoothly in between, and redraws its glass background whenever the wallpaper changes.
+ * Redraws the widget's memory rows and CPU/RAM graph every second while the screen is on, and redraws its glass
+ * background whenever the wallpaper changes.
  */
 public class CpuService extends Service {
     private static final String CHANNEL = "cpu";
@@ -25,7 +25,7 @@ public class CpuService extends Service {
             // Without the accessibility service there is no telling what is on screen: keep updating.
             SpeedService speed = SpeedService.instance;
             MemWidget.tick(CpuService.this, speed == null || speed.homeVisible);
-            handler.postDelayed(this, MemWidget.FRAME_MS);
+            handler.postDelayed(this, MemWidget.INTERVAL_MS);
         }
     };
     // The glass background is cut from the wallpaper, so rebuild it as soon as the wallpaper changes.

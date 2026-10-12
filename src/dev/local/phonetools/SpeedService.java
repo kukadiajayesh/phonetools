@@ -78,7 +78,6 @@ public class SpeedService extends AccessibilityService {
     private TextView view;
     private WindowManager.LayoutParams params;
     private long lastRx = -1, lastTx, lastTime;
-    private final CpuMeter cpuMeter = new CpuMeter();
     // Right edge of whatever the status bar shows left of the status icons (clock, notification icons), found with them.
     private int contentRight;
     private boolean systemShowsSpeed;
@@ -451,7 +450,7 @@ public class SpeedService extends AccessibilityService {
 
     /** Adds the CPU use since the previous update to the graph; after a pause (hidden or screen off) only restarts. */
     private void sampleCpu(long now) {
-        int cpu = cpuMeter.sample(now, 3000);
+        int cpu = CpuMeter.sampleShared(now, 3000);
         // Where the phone allows no way of measuring, only the speed is shown.
         graph.setVisibility(cpu == CpuMeter.UNAVAILABLE ? View.GONE : View.VISIBLE);
         if (cpu >= 0) graph.add(cpu);

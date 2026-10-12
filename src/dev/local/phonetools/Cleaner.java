@@ -7,8 +7,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.widget.Toast;
-import java.io.BufferedReader;
-import java.io.FileReader;
 
 /**
  * Frees memory without root: clears the recent apps (through SpeedService, the accessibility service, which closes
@@ -68,17 +66,8 @@ final class Cleaner {
     private static long[] memory(Context context) {
         ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
         ((ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryInfo(info);
-        long swapTotal = 0, swapFree = 0;
-        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/meminfo"))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] parts = line.split("\\s+");
-                if (parts.length < 2) continue;
-                if (parts[0].equals("SwapTotal:")) swapTotal = Long.parseLong(parts[1]);
-                else if (parts[0].equals("SwapFree:")) swapFree = Long.parseLong(parts[1]);
-            }
-        } catch (Exception ignored) {
-        }
-        return new long[] {info.availMem / 1024, swapTotal - swapFree};
+        long[] swap = new long[2];
+        SysFiles.readFields("/proc/meminfo", new String[] {"SwapTotal:", "SwapFree:"}, swap, 0);
+        return new long[] {info.availMem / 1024, swap[0] - swap[1]};
     }
 }

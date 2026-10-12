@@ -6,6 +6,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FilenameFilter;
+import java.util.Arrays;
 
 /**
  * Measures the average CPU use, over all cores, between calls to {@link #sample}.
@@ -26,14 +27,34 @@ final class CpuMeter {
     private static final String CPU = "/sys/devices/system/cpu/";
     // Above this share of its speed range, a core that never went idle is counted as busy rather than asleep.
     private static final float BUSY_SPEED = 0.4f;
+    // Calls to sampleShared() this soon after its last reading get that reading's result.
+    private static final long SHARE_MS = 500;
+
+    private static final CpuMeter shared = new CpuMeter();
+    private static long sharedTime;
+    private static int sharedResult = PENDING;
 
     private final int cores = cpuCount();
     private long lastTime;
     private long lastBusy = -1;
+    private final long[] procStat = new long[8];
     // Per core: total idle time (µs) and idle entries; -1 for a core that is offline or has no cpuidle statistics.
-    private long[] lastIdle, lastEntries;
-    private String[][] idleStates;
+    private long[] idle, entries, lastIdle, lastEntries;
+    // Per core, the files read every second, named once rather than built anew each time.
+    private String[] onlinePaths, speedPaths;
+    private String[][] timePaths, usagePaths;
     private long[] minSpeed, maxSpeed;
+
+    /**
+     * The widget and the status bar both want the CPU use every second: this shares one meter between them, so the
+     * cores' statistics are read once a second rather than twice. Otherwise the same as {@link #sample}.
+     */
+    static synchronized int sampleShared(long now, long maxGapMs) {
+        if (sharedTime != 0 && now >= sharedTime && now - sharedTime < SHARE_MS) return sharedResult;
+        sharedResult = shared.sample(now, maxGapMs);
+        sharedTime = now;
+        return sharedResult;
+    }
 
     /**
      * Returns the CPU use in percent since the previous call, {@link #PENDING} if that was longer than {@code maxGapMs}
@@ -56,7 +77,10 @@ final class CpuMeter {
             return result;
         }
 
-        long[] idle = new long[cores], entries = new long[cores];
+        if (idle == null) {
+            idle = new long[cores];
+            entries = new long[cores];
+        }
         if (!readIdle(idle, entries)) return UNAVAILABLE;
         int result = PENDING;
         if (fresh && lastIdle != null) {
@@ -72,34 +96,47 @@ final class CpuMeter {
             }
             result = clamp(busyCores * 100 / cores);
         }
+        // Keep this reading for the next call, and fill the older arrays with the one after.
+        long[] older = lastIdle;
         lastIdle = idle;
+        idle = older != null ? older : new long[cores];
+        older = lastEntries;
         lastEntries = entries;
+        entries = older != null ? older : new long[cores];
         return result;
     }
 
     /** Fills in each core's idle time and idle entries; returns false if no core has readable statistics. */
     private boolean readIdle(long[] idle, long[] entries) {
-        if (idleStates == null) {
-            idleStates = new String[cores][];
+        if (timePaths == null) {
+            onlinePaths = new String[cores];
+            timePaths = new String[cores][];
+            usagePaths = new String[cores][];
             for (int i = 0; i < cores; i++) {
+                onlinePaths[i] = CPU + "cpu" + i + "/online";
                 File[] states = new File(CPU + "cpu" + i + "/cpuidle").listFiles(new FilenameFilter() {
                     @Override
                     public boolean accept(File dir, String name) {
                         return name.startsWith("state");
                     }
                 });
-                idleStates[i] = new String[states == null ? 0 : states.length];
-                for (int s = 0; s < idleStates[i].length; s++) idleStates[i][s] = states[s].getPath();
+                int count = states == null ? 0 : states.length;
+                timePaths[i] = new String[count];
+                usagePaths[i] = new String[count];
+                for (int s = 0; s < count; s++) {
+                    timePaths[i][s] = states[s].getPath() + "/time";
+                    usagePaths[i][s] = states[s].getPath() + "/usage";
+                }
             }
         }
         boolean any = false;
         for (int i = 0; i < cores; i++) {
             idle[i] = -1;
             // cpu0 often has no "online" file: it cannot be taken offline.
-            if (idleStates[i].length == 0 || readLong(CPU + "cpu" + i + "/online", 1) == 0) continue;
+            if (timePaths[i].length == 0 || SysFiles.readLong(onlinePaths[i], 1) == 0) continue;
             long time = 0, count = 0;
-            for (String state : idleStates[i]) {
-                long t = readLong(state + "/time", -1), u = readLong(state + "/usage", -1);
+            for (int s = 0; s < timePaths[i].length; s++) {
+                long t = SysFiles.readLong(timePaths[i][s], -1), u = SysFiles.readLong(usagePaths[i][s], -1);
                 if (t < 0 || u < 0) {
                     time = -1;
                     break;
@@ -120,12 +157,14 @@ final class CpuMeter {
         if (minSpeed == null) {
             minSpeed = new long[cores];
             maxSpeed = new long[cores];
+            speedPaths = new String[cores];
             for (int c = 0; c < cores; c++) {
-                minSpeed[c] = readLong(CPU + "cpu" + c + "/cpufreq/cpuinfo_min_freq", 0);
-                maxSpeed[c] = readLong(CPU + "cpu" + c + "/cpufreq/cpuinfo_max_freq", 0);
+                minSpeed[c] = SysFiles.readLong(CPU + "cpu" + c + "/cpufreq/cpuinfo_min_freq", 0);
+                maxSpeed[c] = SysFiles.readLong(CPU + "cpu" + c + "/cpufreq/cpuinfo_max_freq", 0);
+                speedPaths[c] = CPU + "cpu" + c + "/cpufreq/scaling_cur_freq";
             }
         }
-        long now = readLong(CPU + "cpu" + i + "/cpufreq/scaling_cur_freq", 0);
+        long now = SysFiles.readLong(speedPaths[i], 0);
         if (now <= 0 || maxSpeed[i] <= minSpeed[i]) return 0;
         return (now - minSpeed[i]) / (float) (maxSpeed[i] - minSpeed[i]);
     }
@@ -135,15 +174,11 @@ final class CpuMeter {
     }
 
     /** Returns busy jiffies (user, nice, system, irq, softirq, steal) from the first line of /proc/stat, or -1. */
-    private static long readProcStat() {
-        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/stat"))) {
-            String[] parts = reader.readLine().trim().split("\\s+");
-            long busy = 0;
-            for (int i : new int[] {1, 2, 3, 6, 7, 8}) if (i < parts.length) busy += Long.parseLong(parts[i]);
-            return busy;
-        } catch (Exception ignored) {
-            return -1;
-        }
+    private long readProcStat() {
+        // user, nice, system, idle, iowait, irq, softirq, steal; older kernels stop before the last few.
+        Arrays.fill(procStat, 0);
+        if (SysFiles.readFirstLine("/proc/stat", procStat) < 4) return -1;
+        return procStat[0] + procStat[1] + procStat[2] + procStat[5] + procStat[6] + procStat[7];
     }
 
     /** Counts possible cores (online or not) from a range list like "0-3". */
@@ -157,14 +192,6 @@ final class CpuMeter {
             return count;
         } catch (Exception ignored) {
             return Runtime.getRuntime().availableProcessors();
-        }
-    }
-
-    private static long readLong(String path, long fallback) {
-        try (BufferedReader reader = new BufferedReader(new FileReader(path))) {
-            return Long.parseLong(reader.readLine().trim());
-        } catch (Exception ignored) {
-            return fallback;
         }
     }
 }
