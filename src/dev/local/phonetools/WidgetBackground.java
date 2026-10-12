@@ -26,10 +26,10 @@ import android.view.WindowManager;
 
 /**
  * Fakes an iOS-style "liquid glass" widget background from the slice of the wallpaper behind the widget: a light
- * blur, edges that bend it inward like the rim of a convex lens with colour fringes at the corners, a tint that
- * follows how bright the wallpaper is, and light catching the rim on the sides facing it. An even bright rim read as
- * a border, so the rim light fades out where the edge runs along the light. Android 13+ draws it with an AGSL shader
- * on the GPU; older Android (and any GPU failure) with a pixel loop that draws the same.
+ * blur, edges that bend in the wallpaper from just outside like a lens, with colour fringes at the corners, a tint
+ * that follows how bright the wallpaper is, and light catching the rim on the sides facing it. An even bright rim read
+ * as a border, so the rim light fades out where the edge runs along the light. Android 13+ draws it with an AGSL
+ * shader on the GPU; older Android (and any GPU failure) with a pixel loop that draws the same.
  * The widget's place on screen is learned from the bounds the launcher reports when the widget is tapped.
  */
 final class WidgetBackground {
@@ -41,8 +41,8 @@ final class WidgetBackground {
     // Tint at the top, as black alpha (0..1), over the darkest and the brightest wallpaper; the bottom gets
     // TINT_RAMP more. Bright wallpaper needs more so white text stays readable; dark wallpaper shows through more.
     private static final float TINT_DARK = 0.12f, TINT_BRIGHT = 0.42f, TINT_RAMP = 0.10f;
-    // Edge lens: how wide the bent band is, and how far in it reaches for wallpaper at the very edge, in dp.
-    private static final float LENS_DP = 26f, LENS_SHIFT_DP = 28f;
+    // Edge lens: how wide the bent band is, and how far out it reaches for wallpaper at the very edge, in dp.
+    private static final float LENS_DP = 26f, LENS_SHIFT_DP = 40f;
     // Edge directions come from a rounder rectangle (this many times the corner radius), so they turn smoothly
     // round the corners instead of snapping along the diagonal, which showed as a crease in the lens band.
     private static final float NORMAL_CORNER_SCALE = 1.5f;
@@ -99,8 +99,8 @@ final class WidgetBackground {
 
     private static Bitmap render(Context context, Bitmap wallpaper, Rect bounds) {
         float density = context.getResources().getDisplayMetrics().density;
-        // The lens looks inward, so the margin only gives the blur real wallpaper to spread in from outside.
-        int margin = 2 * BLUR_RADIUS * BLUR_SCALE;
+        // The lens reaches out past the widget for wallpaper, the red part furthest; the margin holds what it sees.
+        int margin = Math.round(LENS_SHIFT_DP * (1 + DISPERSION) * density) + BLUR_SCALE;
         Bitmap blurred = blurredSlice(context, wallpaper, bounds, margin);
 
         int w = bounds.width(), h = bounds.height();
@@ -133,22 +133,21 @@ final class WidgetBackground {
                 if (coverage <= 0f) continue;
                 edgeNormal(px, py, halfW, halfH, normalRadius, normal);
 
-                // Near the edge, look further in, as through the curved rim of a convex lens. The profile is a
-                // circular arc, so right at the edge the bending outruns the step and mirrors a sliver of wallpaper.
+                // Near the edge, look further out, as if through the curved rim of a lens.
                 float t = d < lens ? 1f - d / lens : 0f;
-                float pull = (1f - (float) Math.sqrt(1f - t * t)) * shift;
+                float pull = (float) Math.pow(t, 1.6) * shift;
                 float sx = x + 0.5f + margin, sy = y + 0.5f + margin, nx = normal[0], ny = normal[1];
                 float r, g, b;
                 int green = sample(src, blurred.getWidth(), blurred.getHeight(),
-                        (sx - nx * pull) / BLUR_SCALE, (sy - ny * pull) / BLUR_SCALE);
+                        (sx + nx * pull) / BLUR_SCALE, (sy + ny * pull) / BLUR_SCALE);
                 g = (green >> 8) & 0xFF;
                 float dispersion = DISPERSION * Math.abs(px * py) / (halfW * halfH);
                 if (pull * dispersion > 0.25f) {
                     float redPull = pull * (1 + dispersion), bluePull = pull * (1 - dispersion);
                     r = (sample(src, blurred.getWidth(), blurred.getHeight(),
-                            (sx - nx * redPull) / BLUR_SCALE, (sy - ny * redPull) / BLUR_SCALE) >> 16) & 0xFF;
+                            (sx + nx * redPull) / BLUR_SCALE, (sy + ny * redPull) / BLUR_SCALE) >> 16) & 0xFF;
                     b = sample(src, blurred.getWidth(), blurred.getHeight(),
-                            (sx - nx * bluePull) / BLUR_SCALE, (sy - ny * bluePull) / BLUR_SCALE) & 0xFF;
+                            (sx + nx * bluePull) / BLUR_SCALE, (sy + ny * bluePull) / BLUR_SCALE) & 0xFF;
                 } else {
                     r = (green >> 16) & 0xFF;
                     b = green & 0xFF;
@@ -195,7 +194,7 @@ final class WidgetBackground {
         canvas.scale(1f / BLUR_SCALE, 1f / BLUR_SCALE);
         canvas.translate(left - bounds.left + margin, top - bounds.top + margin);
         canvas.scale(scale, scale);
-        // Past the screen edge there is no wallpaper to blur in, so stretch its edge pixels outward.
+        // Past the screen edge the lens would see nothing, so stretch the wallpaper's edge pixels outward.
         Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
         paint.setShader(new BitmapShader(wallpaper, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
         canvas.drawPaint(paint);
@@ -351,11 +350,11 @@ final class WidgetBackground {
                 + "    float2 n = edgeNormal(p, halfSize, normalRadius);\n"
                 + "\n"
                 + "    float t = d < lens ? 1.0 - d / lens : 0.0;\n"
-                + "    float2 pull = n * (1.0 - sqrt(1.0 - t * t)) * shift;\n"
+                + "    float2 pull = n * pow(t, 1.6) * shift;\n"
                 + "    float split = dispersion * abs(p.x * p.y) / (halfSize.x * halfSize.y);\n"
-                + "    float3 c = float3(wallpaper.eval(coord - pull * (1.0 + split)).r,\n"
-                + "                      wallpaper.eval(coord - pull).g,\n"
-                + "                      wallpaper.eval(coord - pull * (1.0 - split)).b);\n"
+                + "    float3 c = float3(wallpaper.eval(coord + pull * (1.0 + split)).r,\n"
+                + "                      wallpaper.eval(coord + pull).g,\n"
+                + "                      wallpaper.eval(coord + pull * (1.0 - split)).b);\n"
                 + "    float grey = dot(c, float3(0.299, 0.587, 0.114));\n"
                 + "    c = grey + (c - grey) * saturation;\n"
                 + "    float tint = tintTop + tintRamp * coord.y / size.y;\n"
