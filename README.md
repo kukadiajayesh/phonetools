@@ -38,6 +38,11 @@ adb install -r phonetools.apk
 adb root && adb shell dpm set-active-admin dev.local.phonetools/.AdminReceiver
 ```
 
+Publish the APK on GitHub: `./release.sh` builds it and attaches it, as `phonetools-<version>-debug.apk`, to the
+release `v<version>` (from `versionName` in `AndroidManifest.xml`), creating the release at the current commit if
+there is none. The commit must be pushed and the working tree clean. Running it again for the same version replaces the
+APK; bump `versionName` for a new release. It signs in with `GITHUB_TOKEN`, or else the login git pushes with.
+
 Add to the home screen (shows an "Add to Home screen" prompt on the phone):
 
 ```bash
