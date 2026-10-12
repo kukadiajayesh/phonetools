@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Phone tools</string>
+    <string name="lock">Lock</string>
+    <string name="memory">Memory</string>
+    <string name="cpu_graph">Widget graph</string>
+    <string name="cpu_graph_desc">Updates the CPU and RAM graph every second while the screen is on.</string>
+    <string name="speed">Network speed</string>
+    <string name="speed_desc">Shows download and upload speed in the status bar, next to the clock, and clears recent apps when you tap the memory widget. It only reads the status bar and the recents screen.</string>
+    <string name="admin_desc">Lets the Lock shortcut turn off the screen.</string>
+</resources>
