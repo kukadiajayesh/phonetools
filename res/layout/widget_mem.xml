@@ -1,0 +1,36 @@
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_bg">
+    <ImageView android:id="@+id/background" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+        android:layout_margin="14dp" android:orientation="vertical">
+        <TextView android:id="@+id/available" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textColor="#FFFFFFFF" android:textSize="18sp" android:shadowColor="#99000000" android:shadowRadius="3" android:shadowDy="1" android:textStyle="bold" android:text="Memory" />
+        <ProgressBar android:id="@+id/bar" style="@android:style/Widget.ProgressBar.Horizontal"
+            android:layout_width="match_parent" android:layout_height="6dp" android:layout_marginTop="6dp"
+            android:layout_marginBottom="6dp" android:max="100" />
+        <TextView android:id="@+id/details" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textColor="#CCFFFFFF" android:textSize="13sp" android:shadowColor="#99000000" android:shadowRadius="3" android:shadowDy="1" />
+        <TextView android:id="@+id/battery" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="2dp" android:textColor="#CCFFFFFF" android:textSize="13sp" android:shadowColor="#99000000" android:shadowRadius="3" android:shadowDy="1" />
+        <TextView android:id="@+id/power" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="2dp" android:textColor="#CCFFFFFF" android:textSize="13sp" android:shadowColor="#99000000" android:shadowRadius="3" android:shadowDy="1" />
+        <LinearLayout android:id="@+id/cpu_row" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:layout_marginTop="6dp" android:minHeight="32dp" android:orientation="horizontal">
+            <TextView android:id="@+id/cpu" android:layout_width="wrap_content" android:layout_height="match_parent"
+                android:layout_marginEnd="8dp" android:gravity="center_vertical" android:minWidth="64dp"
+                android:textColor="#FF80CBC4" android:textSize="13sp" android:shadowColor="#99000000" android:shadowRadius="3" android:shadowDy="1" android:text="CPU" />
+            <ImageView android:id="@+id/cpu_graph" android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1" android:scaleType="fitXY" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:layout_marginTop="6dp" android:minHeight="32dp" android:orientation="horizontal">
+            <TextView android:id="@+id/ram" android:layout_width="wrap_content" android:layout_height="match_parent"
+                android:layout_marginEnd="8dp" android:gravity="center_vertical" android:minWidth="64dp"
+                android:textColor="#FFFFD54F" android:textSize="13sp" android:shadowColor="#99000000" android:shadowRadius="3" android:shadowDy="1" android:text="RAM" />
+            <ImageView android:id="@+id/ram_graph" android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1" android:scaleType="fitXY" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
