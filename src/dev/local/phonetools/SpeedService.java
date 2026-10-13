@@ -17,11 +17,13 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
 import android.net.TrafficStats;
+import android.os.Build;
 import android.os.Handler;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
+import android.view.DisplayCutout;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -31,6 +33,7 @@ import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -51,12 +54,14 @@ public class SpeedService extends AccessibilityService {
             "com.android.systemui:id/clock"};
     // Shown only while the notification shade is pulled down; its header has its own clock and battery.
     private static final String SHADE = "com.android.systemui:id/quick_settings_container";
+    // The space stock SystemUI leaves for a camera hole; where the cutout is found before Android 10.
+    private static final String CUTOUT_SPACER = "com.android.systemui:id/cutout_space_view";
     // The status bar's own network speed indicator, where the system has one (OxygenOS, LineageOS 17+, MIUI):
     // while it is shown, only the CPU graph is drawn.
     private static final String[] SYSTEM_SPEED = {"com.android.systemui:id/network_speed",
             "com.android.systemui:id/network_traffic", "com.android.systemui:id/network_speed_view"};
     // The CPU graph's width: as wide as there is room for, up to the first, and hidden below the second.
-    private static final int GRAPH_DP = 56, MIN_GRAPH_DP = 24;
+    private static final int GRAPH_DP = 56, MIN_GRAPH_DP = 16;
     private static final int GAP_DP = 4;
     private static final String DISMISS_TASK = "com.android.systemui:id/dismiss_task";
     // Recents is checked every ROUND_MS; gives up after MAX_STALLS rounds in which the cards shown did not change.
@@ -81,6 +86,7 @@ public class SpeedService extends AccessibilityService {
     // Right edge of whatever the status bar shows left of the status icons (clock, notification icons), found with them.
     private int contentRight;
     private boolean systemShowsSpeed;
+    private Rect cutoutSpacer;
     // Screen capture for the icon colour; null until allowed. The virtual display only gets a surface while sampling.
     private MediaProjection projection;
     private VirtualDisplay capture;
@@ -378,12 +384,20 @@ public class SpeedService extends AccessibilityService {
             long up = Math.max(0, Math.round((tx - lastTx) / 1024f / seconds));
             view.setText("↓ " + kb(down) + "\n↑ " + kb(up));
             int gap = Math.round(GAP_DP * getResources().getDisplayMetrics().density);
-            int x = getResources().getDisplayMetrics().widthPixels - icons.left + gap;
-            if (params.x != x) {
+            // The icons are in screen coordinates, so measure from the screen's edge: in landscape the app width
+            // leaves out the navigation bar and cutout at the sides. The status bar is also shorter in landscape, so
+            // the overlay is as tall as centres it on the icons.
+            DisplayMetrics real = new DisplayMetrics();
+            windows.getDefaultDisplay().getRealMetrics(real);
+            int[] span = freeSpan(contentRight, icons.left - gap, icons.bottom, gap);
+            int start = span[0], end = span[1];
+            int x = real.widthPixels - end, height = icons.top + icons.bottom;
+            if (params.x != x || params.height != height) {
                 params.x = x;
+                params.height = height;
                 windows.updateViewLayout(bar, params);
             }
-            bar.setVisibility(layOut(icons.left - gap - contentRight) ? View.VISIBLE : View.GONE);
+            bar.setVisibility(layOut(end - start) ? View.VISIBLE : View.GONE);
             // Ask again if capture was refused, cancelled or stopped, but only where that shows no prompt.
             if (projection == null && now - lastCaptureRequest > 10_000 && captureAllowed()) requestCapture();
             sampleIconColor(icons);
@@ -416,36 +430,102 @@ public class SpeedService extends AccessibilityService {
         homeVisible = visible;
     }
 
+    /** The narrowest room that shows everything: the speed text (unless the system shows its own) and the graph. */
+    private int fullWidth() {
+        float density = getResources().getDisplayMetrics().density;
+        int width = 0;
+        if (!systemShowsSpeed) {
+            view.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+            width = view.getMeasuredWidth() + Math.round(GAP_DP * density);
+        }
+        return graph.getVisibility() != View.GONE ? width + Math.round(MIN_GRAPH_DP * density) : width;
+    }
+
+    /**
+     * Returns the part of {@code [start, end]} to draw in, as {start, end}, so that no camera hole, notch or other
+     * display cutout cuts the graph or text. The cutouts reaching into the status bar (above {@code bottom}) split the
+     * room into gaps, each kept {@code gap} clear of them; the gap nearest the status icons that fits everything wins,
+     * else the widest (where the graph stays and the text is hidden). Works for any number and position of cutouts.
+     */
+    private int[] freeSpan(int start, int end, int bottom, int gap) {
+        List<Rect> holes = new ArrayList<>();
+        // Android 10+ reports the cutouts; before that, stock SystemUI keeps a spacer view where the hole is.
+        if (Build.VERSION.SDK_INT >= 29) holes.addAll(Cutout.rects(windows));
+        else if (cutoutSpacer != null) holes.add(cutoutSpacer);
+        List<int[]> gaps = new ArrayList<>();
+        gaps.add(new int[] {start, end});
+        for (Rect hole : holes) {
+            if (hole.isEmpty() || hole.top >= bottom) continue;
+            List<int[]> split = new ArrayList<>();
+            for (int[] g : gaps) {
+                if (hole.right + gap <= g[0] || hole.left - gap >= g[1]) {
+                    split.add(g);
+                    continue;
+                }
+                if (hole.left - gap > g[0]) split.add(new int[] {g[0], hole.left - gap});
+                if (hole.right + gap < g[1]) split.add(new int[] {hole.right + gap, g[1]});
+            }
+            gaps = split;
+        }
+        if (gaps.isEmpty()) return new int[] {end, end};
+        // The gaps are in order from left to right, so the last is nearest the status icons.
+        int full = fullWidth();
+        for (int i = gaps.size() - 1; i >= 0; i--) {
+            if (gaps.get(i)[1] - gaps.get(i)[0] >= full) return gaps.get(i);
+        }
+        int[] widest = gaps.get(gaps.size() - 1);
+        for (int[] g : gaps) {
+            if (g[1] - g[0] > widest[1] - widest[0]) widest = g;
+        }
+        return widest;
+    }
+
+    /** The display cutouts, in their own class so Android 9 and older never load DisplayCutout. */
+    private static final class Cutout {
+        static List<Rect> rects(WindowManager windows) {
+            DisplayCutout cutout = windows.getDefaultDisplay().getCutout();
+            return cutout != null ? cutout.getBoundingRects() : new ArrayList<Rect>();
+        }
+    }
+
     /**
      * Fits the graph and speed text into {@code room} pixels, and returns whether anything is left to show. Some status
      * bars (OxygenOS, for one) fill the space up to the status icons with notification icons: rather than cover them,
-     * the graph narrows, and what does not fit is hidden. The speed text is left out where the system shows its own.
+     * the graph narrows, then the speed text is hidden to keep the graph, then the graph. The speed text is also left
+     * out where the system shows its own.
      */
     private boolean layOut(int room) {
         float density = getResources().getDisplayMetrics().density;
         boolean text = !systemShowsSpeed, cpu = graph.getVisibility() != View.GONE;
-        view.setVisibility(text ? View.VISIBLE : View.GONE);
         int textWidth = 0;
         if (text) {
             view.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
             textWidth = view.getMeasuredWidth();
         }
-        if (cpu) {
-            LinearLayout.LayoutParams size = (LinearLayout.LayoutParams) graph.getLayoutParams();
-            int margin = text ? Math.round(GAP_DP * density) : 0;
-            int width = Math.min(Math.round(GRAPH_DP * density), room - textWidth - margin);
-            if (width >= Math.round(MIN_GRAPH_DP * density)) {
-                if (size.width != width || size.getMarginEnd() != margin) {
-                    size.width = width;
-                    size.setMarginEnd(margin);
-                    graph.setLayoutParams(size);
-                }
-                return true;
-            }
-            // No room for the graph: drop it, and show the text alone if that fits.
-            graph.setVisibility(View.GONE);
+        int minGraph = Math.round(MIN_GRAPH_DP * density), margin = Math.round(GAP_DP * density);
+        // No room for both: the graph stays and the text goes, or the text alone if even the graph does not fit.
+        if (text && cpu && room - textWidth - margin < minGraph) {
+            if (room >= minGraph) text = false;
+            else cpu = false;
         }
-        return text && textWidth <= room;
+        view.setVisibility(text ? View.VISIBLE : View.GONE);
+        if (!cpu) {
+            graph.setVisibility(View.GONE);
+            return text && textWidth <= room;
+        }
+        LinearLayout.LayoutParams size = (LinearLayout.LayoutParams) graph.getLayoutParams();
+        if (!text) margin = 0;
+        int width = Math.min(Math.round(GRAPH_DP * density), room - (text ? textWidth : 0) - margin);
+        if (width < minGraph) {
+            graph.setVisibility(View.GONE);
+            return false;
+        }
+        if (size.width != width || size.getMarginEnd() != margin) {
+            size.width = width;
+            size.setMarginEnd(margin);
+            graph.setLayoutParams(size);
+        }
+        return true;
     }
 
     /** Adds the CPU use since the previous update to the graph; after a pause (hidden or screen off) only restarts. */
@@ -471,6 +551,7 @@ public class SpeedService extends AccessibilityService {
                 for (int i = 0; bounds == null && i < STATUS_ICONS.length; i++) bounds = visibleBounds(root, STATUS_ICONS[i]);
                 if (bounds != null && bounds.top < statusBarHeight()) {
                     contentRight = rightmostBefore(root, bounds.left);
+                    if (Build.VERSION.SDK_INT < 29) cutoutSpacer = visibleBounds(root, CUTOUT_SPACER);
                     systemShowsSpeed = false;
                     for (String id : SYSTEM_SPEED) systemShowsSpeed |= visibleBounds(root, id) != null;
                     return bounds;
@@ -482,14 +563,17 @@ public class SpeedService extends AccessibilityService {
         return null;
     }
 
-    /** Returns the right edge of the visible views that end left of {@code limit}, or 0. */
+    /**
+     * Returns the right edge of the visible views that end left of {@code limit}, or 0. The camera hole's spacer is
+     * empty space, not content: {@link #freeSpan} keeps clear of the hole itself.
+     */
     private static int rightmostBefore(AccessibilityNodeInfo node, int limit) {
         int right = 0;
         Rect bounds = new Rect();
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child == null) continue;
-            if (child.isVisibleToUser()) {
+            if (child.isVisibleToUser() && !CUTOUT_SPACER.equals(child.getViewIdResourceName())) {
                 if (child.getChildCount() > 0) {
                     right = Math.max(right, rightmostBefore(child, limit));
                 } else {
