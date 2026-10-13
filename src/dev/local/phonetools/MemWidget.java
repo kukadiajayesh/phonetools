@@ -14,6 +14,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.os.BatteryManager;
+import android.os.Build;
 import android.os.SystemClock;
 import android.view.View;
 import android.widget.RemoteViews;
@@ -62,7 +63,10 @@ public class MemWidget extends AppWidgetProvider {
         for (int id : ids) manager.updateAppWidget(id, views);
         alarms(context).setRepeating(AlarmManager.ELAPSED_REALTIME,
                 SystemClock.elapsedRealtime() + INTERVAL, INTERVAL, selfIntent(context));
-        context.startForegroundService(new Intent(context, CpuService.class));
+        Intent service = new Intent(context, CpuService.class);
+        // Android 7 lets a background app start a service directly.
+        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(service);
+        else context.startService(service);
     }
 
     @Override

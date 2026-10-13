@@ -15,7 +15,7 @@ only the graph is drawn there).
 
 ## Other devices
 
-The app installs on any phone with Android 8.0 or newer (tested on the Moto G 2014 with LineageOS 15 and a OnePlus 9 Pro with OxygenOS 14) and needs no root (only `userinit.sh` and the hosts file
+The app installs on any phone with Android 7.1 or newer (tested on the Moto G 2014 with LineageOS 15, a OnePlus 9 Pro with OxygenOS 14, a moto g64 5G and an Android 7.1 X1; on Android 7 there are no pin requests, so add the widget from the launcher) and needs no root (only `userinit.sh` and the hosts file
 below do). Features that a phone does not allow are left out, and the rest keeps working:
 
 | Feature | Needs | When it is not available |

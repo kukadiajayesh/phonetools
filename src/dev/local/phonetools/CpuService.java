@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.PowerManager;
@@ -60,18 +61,27 @@ public class CpuService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         NotificationManager notifications = getSystemService(NotificationManager.class);
-        notifications.createNotificationChannel(
-                new NotificationChannel(CHANNEL, getString(R.string.cpu_graph), NotificationManager.IMPORTANCE_MIN));
-        Notification notification = new Notification.Builder(this, CHANNEL)
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= 26) {
+            notifications.createNotificationChannel(new NotificationChannel(CHANNEL, getString(R.string.cpu_graph),
+                    NotificationManager.IMPORTANCE_MIN));
+            builder = new Notification.Builder(this, CHANNEL);
+        } else {
+            // Android 7 has no channels; the priority keeps the notification as quiet as IMPORTANCE_MIN.
+            builder = new Notification.Builder(this).setPriority(Notification.PRIORITY_MIN);
+        }
+        Notification notification = builder
                 .setSmallIcon(R.drawable.ic_lock)
                 .setContentTitle(getString(R.string.cpu_graph))
                 .setContentText(getString(R.string.cpu_graph_desc))
                 .build();
         startForeground(1, notification);
-        try {
-            // Left over from showing the network speed as this notification's icon.
-            notifications.deleteNotificationChannel("speed");
-        } catch (RuntimeException ignored) {
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                // Left over from showing the network speed as this notification's icon.
+                notifications.deleteNotificationChannel("speed");
+            } catch (RuntimeException ignored) {
+            }
         }
         return START_STICKY;
     }
